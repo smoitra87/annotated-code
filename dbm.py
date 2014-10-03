@@ -26,7 +26,8 @@
 #
 # ----------------------------------------------------
 
-import numpy,Image
+import numpy
+from PIL import Image
 
 # ====================================================
 # Global parameters
@@ -113,7 +114,7 @@ class DBM:
 # ====================================================
 
 # Initialize MNIST dataset and centered DBM
-X = (numpy.fromfile(open('train-images.idx3-ubyte','r'),dtype='ubyte',count=16+784*60000)[16:].reshape([60000,784])).astype('float32')/255.0
+X = (numpy.fromfile(open('train-images-idx3-ubyte','r'),dtype='ubyte',count=16+784*60000)[16:].reshape([60000,784])).astype('float32')/255.0
 nn = DBM([784]+hlayers,[arcsigm(numpy.clip(X.mean(axis=0),0.01,0.99))]+biases)
 
 for it in range(1000):
@@ -127,6 +128,6 @@ for it in range(1000):
 	for l in range(len(nn.W)):
 		W = numpy.dot(W,nn.W[l])
 		m = int(W.shape[1]**.5)
-		render(W.reshape([28,28,m,m]).transpose([2,0,3,1]).reshape([28*m,28*m]),'W%d.jpg'%(l+1));
-	render((nn.X[0]).reshape([mb,28,28]).transpose([1,0,2]).reshape([28,mb*28]),'X.jpg');
+		render(W.reshape([28,28,m,m]).transpose([2,0,3,1]).reshape([28*m,28*m]),'W%d.png'%(l+1));
+	render((nn.X[0]).reshape([mb,28,28]).transpose([1,0,2]).reshape([28,mb*28]),'X.png');
 
