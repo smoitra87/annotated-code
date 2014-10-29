@@ -28,6 +28,9 @@
 
 import numpy
 from PIL import Image
+msaf = "sim1.train.msa"
+import util
+import numpy as np
 
 # ====================================================
 # Global parameters
@@ -37,6 +40,7 @@ rr = 0.005     # reparameterization rate
 mb = 25        # minibatch size
 hlayers = [400, 100]  # size of hidden layers
 biases = [-1, -1]   # initial biases on hidden layers
+dimvis = 20
 
 # ====================================================
 # Helper functions
@@ -50,10 +54,26 @@ def arcsigm(x):
 def sigm(x):
     return (numpy.tanh(x/2)+1)/2
 
+def softmax(x, dim=0):
+    """
+    x - activations to run softmax over
+    dim: Dimension along which to calculate softmax
+    """
+    y = np.exp(x)
+    return y / np.expand_dims(y.sum(axis=dim)+1, axis=dim)
 
 def realize(x):
     return (x > numpy.random.uniform(0, 1, x.shape))*1.0
 
+def realize_softmax(x, dim=0):
+    #TODO  Might be buggy
+    shape = list(x.shape)
+    shape[dim]=1
+    samples = np.asarray(np.cumsum(x, axis=dim) > np.random.rand(*shape),dtype=np.float)
+    indices = tuple(slice(d) if idx!=dim else slice(0,d-1) for idx,d in enumerate(x.shape))
+    indices2 = tuple(slice(d) if idx!=dim else slice(1,d) for idx,d in enumerate(x.shape))
+    samples[indices2] -= samples[indices]
+    return samples
 
 def render(x, name):
     x = x - x.min() + 1e-9
@@ -76,30 +96,47 @@ class DBM:
     # --------------------------------------------
 
     def __init__(self, M, B):
-        self.W = [numpy.zeros([m, n]).astype('float32')
-                  for m, n in zip(M[:-1], M[1:])]
-        self.B = [numpy.zeros([m]).astype('float32')+b for m, b in zip(M, B)]
-        self.O = [sigm(b) for b in self.B]
-        self.X = [numpy.zeros([mb, m]).astype(
-            'float32')+o for m, o in zip(M, self.O)]
+        self.W = [np.zeros((dimvis-1, M[0],M[1]))] + [numpy.zeros([m, n]).astype('float32')
+                  for m, n in zip(M[1:-1], M[2:])]
+        self.B = [np.zeros([dimvis-1,M[0]]) + B[0]] + [numpy.zeros([m]).astype('float32')+b for m, b in zip(M[1:], B[1:])]
+        self.O = [softmax(B[0])] + [sigm(b) for b in self.B[1:]]
+
+        self.X = [np.zeros([mb, dimvis-1, M[0]]) + self.O[0]] + \
+                [numpy.zeros([mb, m]).astype(
+            'float32')+o for m, o in zip(M[1:], self.O[1:])]
 
     # --------------------------------------------
     # Gibbs activation of a layer
     # --------------------------------------------
     def gibbs(self, X, l):
-        bu = numpy.dot(X[l-1]-self.O[l-1], self.W[l-1]) if l > 0 else 0
-        td = numpy.dot(X[l+1]-self.O[l+1], self.W[l].T) if l+1 < len(X) else 0
-        X[l] = realize(sigm(bu+td+self.B[l]))
+        if l==0 :
+            td = np.tensordot(X[1]-self.O[1], self.W[0], axes=([1],[2]))
+            X[0] = realize_softmax(softmax(td+self.B[0], dim=1), dim=1)
+        else:
+            if l==1:
+                bu = np.tensordot(X[0]-self.O[0], self.W[0], axes=([1,2],[0,1]))
+            else :
+                bu = numpy.dot(X[l-1]-self.O[l-1], self.W[l-1])
+            td = numpy.dot(X[l+1]-self.O[l+1], self.W[l].T) if l+1 < len(X) else 0
+            X[l] = realize(sigm(bu+td+self.B[l]))
 
     # --------------------------------------------
     # Reparameterization
     # --------------------------------------------
-    def reparamB(self, X, i):
-        bu = numpy.dot((X[i-1]-self.O[i-1]), self.W[
-                       i-1]).mean(axis=0) if i > 0 else 0
-        td = numpy.dot((X[i+1]-self.O[i+1]), self.W[
-                       i].T).mean(axis=0) if i+1 < len(X) else 0
-        self.B[i] = (1-rr)*self.B[i] + rr*(self.B[i] + bu + td)
+    def reparamB(self, X, l):
+        if l==0 :
+            td = np.tensordot(X[1]-self.O[1], self.W[0], \
+                              axes=([1],[2])).mean(axis=0)
+            bu = 0.
+        else:
+            if l==1:
+                bu = np.tensordot(X[0]-self.O[0], self.W[0], \
+                                  axes=([1,2],[0,1])).mean(axis=0)
+            else :
+                bu = numpy.dot(X[l-1]-self.O[l-1], self.W[l-1]).mean(axis=0)
+            td = numpy.dot(X[l+1]-self.O[l+1], self.W[l].T) if l+1 < len(X) else 0
+
+        self.B[l] = (1-rr)*self.B[l] + rr*(self.B[l] + bu + td)
 
     def reparamO(self, X, i):
         self.O[i] = (1-rr)*self.O[i] + rr*X[i].mean(axis=0)
@@ -110,7 +147,7 @@ class DBM:
     def learn(self, Xd):
 
         # Initialize a data particle
-        X = [realize(Xd)]+[self.X[l]*0+self.O[l]
+        X = [Xd]+[self.X[l]*0+self.O[l]
                            for l in range(1, len(self.X))]
 
         # Alternate gibbs sampler on data and free particles
@@ -120,7 +157,9 @@ class DBM:
             self.gibbs(self.X, l)
 
         # Parameter update
-        for i in range(0, len(self.W)):
+        self.W[0] += lr*(np.tensordot(X[0]-self.O[0], X[1]-self.O[1], axes=([0],[0])) -
+                        np.tensordot(self.X[0]-self.O[0], self.X[1]-self.O[1], axes=([0],[0])))/len(Xd)
+        for i in range(1, len(self.W)):
             self.W[i] += lr*(numpy.dot((X[i]-self.O[i]).T,     X[i+1]-self.O[i+1]) -
                              numpy.dot((self.X[i]-self.O[i]).T, self.X[i+1]-self.O[i+1]))/len(Xd)
         for i in range(0, len(self.B)):
@@ -136,14 +175,42 @@ class DBM:
 # Example of execution
 # ====================================================
 
-# Initialize MNIST dataset and centered DBM
-X = (numpy.fromfile(open('train-images-idx3-ubyte', 'r'), dtype='ubyte',
-     count=16+784*60000)[16:].reshape([60000, 784])).astype('float32')/255.0
-nn = DBM([784]+hlayers, [arcsigm(numpy.clip(
-    X.mean(axis=0), 0.01, 0.99))]+biases)
+# Load sample msa matrices
+X = util.convert_mat_from_msa(msaf)
+
+ninst, nvis = X.shape
+counts = []
+for i in range(dimvis):
+    counts.append((X==i).sum(axis=0))
+counts = np.asarray(counts, dtype=np.float)
+counts = np.clip(counts/X.shape[0],0.01,0.99)
+counts /= counts.sum(axis=0).reshape(1,nvis)
+
+# Get biases of softmax function
+assert(counts.shape[0] - 1 == dimvis-1)
+Bvis = np.zeros((dimvis-1, nvis))
+for i in range(nvis):
+    a = np.ones([dimvis-1,dimvis-1]) - np.diag(1./counts[:-1,i])
+    b = np.zeros(dimvis-1)-1.
+    Bvis[:,i] = np.log(np.linalg.solve(a,b))
+
+err = ((softmax(Bvis) - counts[:-1])**2).sum()
+assert err < 1e-8
+
+nn = DBM([nvis]+hlayers, [Bvis]+biases)
+
+
+# Convert X matrix to 3D
+XX = np.zeros([X.shape[0], dimvis-1, X.shape[1]])
+
+for idx1, seq in enumerate(X):
+    for idx3, idx2 in enumerate(seq):
+        if idx2 == dimvis-1 : continue
+        XX[idx1,idx2,idx3] = 1.
+assert XX.sum() == (X!=dimvis-1).sum()
+X = XX
 
 for it in range(1000):
-
     # Perform some learning steps
     for _ in range(100):
         nn.learn(X[numpy.random.permutation(len(X))[:mb]])
@@ -151,11 +218,11 @@ for it in range(1000):
     # Output some debugging information
     print(("%03d |" + " %.3f "*len(nn.W)) %
           tuple([it]+[W.std() for W in nn.W]))
-    W = 1
-    for l in range(len(nn.W)):
-        W = numpy.dot(W, nn.W[l])
-        m = int(W.shape[1]**.5)
-        render(W.reshape([28, 28, m, m]).transpose(
-            [2, 0, 3, 1]).reshape([28*m, 28*m]), 'W%d.png' % (l+1))
-    render((nn.X[0]).reshape([mb, 28, 28]).transpose(
-        [1, 0, 2]).reshape([28, mb*28]), 'X.png')
+#    W = 1
+#    for l in range(len(nn.W)):
+#        W = numpy.dot(W, nn.W[l])
+#        m = int(W.shape[1]**.5)
+#        render(W.reshape([28, 28, m, m]).transpose(
+#            [2, 0, 3, 1]).reshape([28*m, 28*m]), 'W%d.png' % (l+1))
+#    render((nn.X[0]).reshape([mb, 28, 28]).transpose(
+#        [1, 0, 2]).reshape([28, mb*28]), 'X.png')
