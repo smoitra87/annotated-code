@@ -28,6 +28,7 @@
 
 import numpy
 from PIL import Image
+#msaf = "allprotease.msa"
 msaf = "sim1.train.msa"
 import util
 import numpy as np
@@ -96,6 +97,7 @@ class DBM:
     # --------------------------------------------
 
     def __init__(self, M, B):
+        self.M = M
         self.W = [np.zeros((dimvis-1, M[0],M[1]))] + [numpy.zeros([m, n]).astype('float32')
                   for m, n in zip(M[1:-1], M[2:])]
         self.B = [np.zeros([dimvis-1,M[0]]) + B[0]] + [numpy.zeros([m]).astype('float32')+b for m, b in zip(M[1:], B[1:])]
@@ -134,7 +136,7 @@ class DBM:
                                   axes=([1,2],[0,1])).mean(axis=0)
             else :
                 bu = numpy.dot(X[l-1]-self.O[l-1], self.W[l-1]).mean(axis=0)
-            td = numpy.dot(X[l+1]-self.O[l+1], self.W[l].T) if l+1 < len(X) else 0
+            td = numpy.dot(X[l+1]-self.O[l+1], self.W[l].T).mean(axis=0) if l+1 < len(X) else 0
 
         self.B[l] = (1-rr)*self.B[l] + rr*(self.B[l] + bu + td)
 
@@ -171,6 +173,51 @@ class DBM:
         for l in range(0, len(self.O)):
             self.reparamO(X, l)
 
+    def samples(self, Xd, nSamples=1, burnin=100, skip=10):
+        # Initialize a data particle
+        numInput = len(Xd)
+        X = [Xd]+[np.zeros([numInput,self.M[l]]) +self.O[l]
+                           for l in range(1, len(self.M))]
+        # Alternate gibbs sampler on data and free particles
+        for l in (range(1, len(self.X), 2)+range(2, len(self.X), 2))*burnin:
+            self.gibbs(X, l)
+
+        # Sample
+        samples = []
+        for idx in range(nSamples):
+            X[0] = Xd
+            for _ in range(skip):
+                for l in (range(1, len(self.X), 2)+range(2, len(self.X), 2))*skip:
+                    self.gibbs(X, l)
+            self.gibbs(X, 0)
+            samples.append(X[0])
+        return samples
+
+    def reconstuction_err(self, Xd, nSamples=100, burnin=100, skip=1):
+        # Initialize a data particle
+        numInput = len(Xd)
+        X = [Xd]+[np.zeros([numInput,self.M[l]]) +self.O[l]
+                           for l in range(1, len(self.M))]
+        # Alternate gibbs sampler on data and free particles
+        for l in (range(1, len(self.X), 2)+range(2, len(self.X), 2))*burnin:
+            self.gibbs(X, l)
+
+        # Sample
+        samples_l1 = np.zeros_like(X[1])
+        for idx in range(nSamples):
+            for _ in range(skip):
+                for l in (range(1, len(self.X), 2)+range(2, len(self.X), 2))*skip:
+                    self.gibbs(X, l)
+            samples_l1 += X[1]
+
+        samples_l1 /= (nSamples+0.)
+        td = np.tensordot(samples_l1-self.O[1], self.W[0], axes=([1],[2]))
+        p_v_given_h1 = softmax(td+self.B[0], dim=1)
+        logProbs = np.sum(Xd*np.log(p_v_given_h1),axis=1) +\
+            (1-Xd.sum(axis=1))*np.log(1-p_v_given_h1.sum(axis=1))
+        ch = -logProbs.mean()
+        return ch
+
 # ====================================================
 # Example of execution
 # ====================================================
@@ -179,12 +226,31 @@ class DBM:
 X = util.convert_mat_from_msa(msaf)
 
 ninst, nvis = X.shape
-counts = []
-for i in range(dimvis):
-    counts.append((X==i).sum(axis=0))
-counts = np.asarray(counts, dtype=np.float)
-counts = np.clip(counts/X.shape[0],0.01,0.99)
-counts /= counts.sum(axis=0).reshape(1,nvis)
+
+
+def tensor_to_msa(Xd):
+    """ Converts the data 3D visual tensor to 2D msa"""
+    return dimvis-1-np.cumsum(Xd,axis=1).sum(axis=1)
+
+def msa_to_tensor(X):
+    XX = np.zeros([X.shape[0], dimvis-1, X.shape[1]])
+    for idx1, seq in enumerate(X):
+        for idx3, idx2 in enumerate(seq):
+            if idx2 == dimvis-1 : continue
+            XX[idx1,idx2,idx3] = 1.
+    assert XX.sum() == (X!=dimvis-1).sum()
+    return XX
+
+def get_counts(X):
+    ninst, nvis = X.shape
+    counts = []
+    for i in range(dimvis):
+        counts.append((X==i).sum(axis=0))
+    counts = np.asarray(counts, dtype=np.float)
+    counts = np.clip(counts/X.shape[0],0.01,0.99)
+    counts /= counts.sum(axis=0).reshape(1,nvis)
+    return counts
+counts = get_counts(X)
 
 # Get biases of softmax function
 assert(counts.shape[0] - 1 == dimvis-1)
@@ -199,16 +265,8 @@ assert err < 1e-8
 
 nn = DBM([nvis]+hlayers, [Bvis]+biases)
 
-
 # Convert X matrix to 3D
-XX = np.zeros([X.shape[0], dimvis-1, X.shape[1]])
-
-for idx1, seq in enumerate(X):
-    for idx3, idx2 in enumerate(seq):
-        if idx2 == dimvis-1 : continue
-        XX[idx1,idx2,idx3] = 1.
-assert XX.sum() == (X!=dimvis-1).sum()
-X = XX
+X = msa_to_tensor(X)
 
 for it in range(1000):
     # Perform some learning steps
@@ -216,8 +274,18 @@ for it in range(1000):
         nn.learn(X[numpy.random.permutation(len(X))[:mb]])
 
     # Output some debugging information
-    print(("%03d |" + " %.3f "*len(nn.W)) %
-          tuple([it]+[W.std() for W in nn.W]))
+
+    if it%5 == 0:
+#        samples = tensor_to_msa(nn.samples(X[:len(X)/2])[0])
+#        err = ((get_counts(np.asarray(samples))-np.asarray(counts))**2).sum()
+
+        err = nn.reconstuction_err(X[:len(X)/2])
+        print(("%03d |" + " %.3f "*len(nn.W) + "%.3f") %
+            tuple([it]+[W.std() for W in nn.W] + [err]))
+    else :
+        print(("%03d |" + " %.3f "*len(nn.W)) %
+            tuple([it]+[W.std() for W in nn.W]))
+
 #    W = 1
 #    for l in range(len(nn.W)):
 #        W = numpy.dot(W, nn.W[l])
