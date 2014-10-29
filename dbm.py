@@ -29,7 +29,9 @@
 import numpy
 from PIL import Image
 #msaf = "allprotease.msa"
-msaf = "sim1.train.msa"
+trainf = "sim1.train.msa"
+validf = "sim1.valid.msa"
+testf = "sim1.test.msa"
 import util
 import numpy as np
 
@@ -222,12 +224,6 @@ class DBM:
 # Example of execution
 # ====================================================
 
-# Load sample msa matrices
-X = util.convert_mat_from_msa(msaf)
-
-ninst, nvis = X.shape
-
-
 def tensor_to_msa(Xd):
     """ Converts the data 3D visual tensor to 2D msa"""
     return dimvis-1-np.cumsum(Xd,axis=1).sum(axis=1)
@@ -250,7 +246,14 @@ def get_counts(X):
     counts = np.clip(counts/X.shape[0],0.01,0.99)
     counts /= counts.sum(axis=0).reshape(1,nvis)
     return counts
-counts = get_counts(X)
+
+
+# Load sample msa matrices
+Xtrain = util.convert_mat_from_msa(trainf)
+Xvalid = util.convert_mat_from_msa(validf)
+
+ninst, nvis = Xtrain.shape
+counts = get_counts(Xtrain)
 
 # Get biases of softmax function
 assert(counts.shape[0] - 1 == dimvis-1)
@@ -266,31 +269,30 @@ assert err < 1e-8
 nn = DBM([nvis]+hlayers, [Bvis]+biases)
 
 # Convert X matrix to 3D
-X = msa_to_tensor(X)
+Xtrain = msa_to_tensor(Xtrain)
+Xvalid = msa_to_tensor(Xvalid)
 
-for it in range(1000):
-    # Perform some learning steps
-    for _ in range(100):
-        nn.learn(X[numpy.random.permutation(len(X))[:mb]])
 
-    # Output some debugging information
+import os
+with open("results_"+os.path.basename(__file__),'w') as fout:
 
-    if it%5 == 0:
-#        samples = tensor_to_msa(nn.samples(X[:len(X)/2])[0])
-#        err = ((get_counts(np.asarray(samples))-np.asarray(counts))**2).sum()
 
-        err = nn.reconstuction_err(X[:len(X)/2])
-        print(("%03d |" + " %.3f "*len(nn.W) + "%.3f") %
-            tuple([it]+[W.std() for W in nn.W] + [err]))
-    else :
-        print(("%03d |" + " %.3f "*len(nn.W)) %
-            tuple([it]+[W.std() for W in nn.W]))
+    for it in range(1000):
+        # Perform some learning steps
+        for _ in range(100):
+            nn.learn(Xtrain[numpy.random.permutation(len(Xtrain))[:mb]])
 
-#    W = 1
-#    for l in range(len(nn.W)):
-#        W = numpy.dot(W, nn.W[l])
-#        m = int(W.shape[1]**.5)
-#        render(W.reshape([28, 28, m, m]).transpose(
-#            [2, 0, 3, 1]).reshape([28*m, 28*m]), 'W%d.png' % (l+1))
-#    render((nn.X[0]).reshape([mb, 28, 28]).transpose(
-#        [1, 0, 2]).reshape([28, mb*28]), 'X.png')
+        # Output some debugging information
+        if it%5 == 0:
+
+            train_err = nn.reconstuction_err(Xtrain[:len(Xtrain)/4])
+            valid_err = nn.reconstuction_err(Xvalid)
+            print(("%03d |" + " %.3f "*len(nn.W) + " | %.3f %.3f") %
+                tuple([it]+[W.std() for W in nn.W] + [train_err, valid_err]))
+            print >>fout, "%d %.3f %.3f"%(it, train_err, valid_err)
+            fout.flush()
+
+        else :
+            print(("%03d |" + " %.3f "*len(nn.W)) %
+                tuple([it]+[W.std() for W in nn.W]))
+
