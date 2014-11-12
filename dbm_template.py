@@ -1,3 +1,4 @@
+script = """
 # ----------------------------------------------------
 # Training a Centered Deep Boltzmann Machine
 # ----------------------------------------------------
@@ -38,15 +39,16 @@ import numpy as np
 # ====================================================
 # Global parameters
 # ====================================================
-lr = 0.5     # learning rate
+lr = {lr}     # learning rate
 rr = 0.005     # reparameterization rate
-l2penalty = 0.001
+l2penalty = {l2penalty}
 #l2penalty = 0.0
 mb = 25        # minibatch size
 hlayers = [100, 25]  # size of hidden layers
 biases = [-1, -1]   # initial biases on hidden layers
 dimvis = 20
-quenching_mode = 'linear' # 'sqrt', 'none'
+#quenching_mode = 'linear' # 'sqrt', 'none'
+quenching_mode = '{quenching_mode}'
 
 # ====================================================
 # Helper functions
@@ -57,8 +59,7 @@ def arcsigm(x):
     return numpy.arctanh(2*x-1)*2
 
 
-def from PIL import Image
-sigm(x):
+def sigm(x):
     return (numpy.tanh(x/2)+1)/2
 
 def softmax(x, dim=0):
@@ -101,7 +102,7 @@ class DBM:
     # --------------------------------------------
 
     def __init__(self, M, B):
-		self.lr = lr
+        self.lr = lr
         self.M = M
         self.W = [np.zeros((dimvis-1, M[0],M[1]))] + [numpy.zeros([m, n]).astype('float32')
                   for m, n in zip(M[1:-1], M[2:])]
@@ -112,8 +113,6 @@ class DBM:
                 [numpy.zeros([mb, m]).astype(
             'float32')+o for m, o in zip(M[1:], self.O[1:])]
 
-    # --------------------------------------------
-	m PIL import Image
 
     # Gibbs activation of a layer
     # --------------------------------------------
@@ -259,7 +258,7 @@ class DBM:
 # ====================================================
 
 def tensor_to_msa(Xd):
-    # Converts the data 3D visual tensor to 2D msa"""
+    # Converts the data 3D visual tensor to 2D msa
     return dimvis-1-np.cumsum(Xd,axis=1).sum(axis=1)
 
 def msa_to_tensor(X):
@@ -313,12 +312,12 @@ with open("results_"+os.path.basename(__file__),'w') as fout:
 
     for it in range(1000):
 		
-		if quenching_mode == 'linear':
-			nn.lr = lr / (it+1.) 
-		elif quencing_mode == 'sqrt':
-			nn.lr = lr / np.sqrt(it+1.)
-		else : 
-			pass
+        if quenching_mode == 'linear':
+            nn.lr = lr / (it+1.) 
+        elif quenching_mode == 'sqrt':
+            nn.lr = lr / np.sqrt(it+1.)
+        else : 
+            pass
 
         # Perform some learning steps
         for _ in range(100):
@@ -338,4 +337,14 @@ with open("results_"+os.path.basename(__file__),'w') as fout:
         else :
             print(("%03d |" + " %.3f "*len(nn.W)) %
                 tuple([it]+[W.std() for W in nn.W]))
+"""
+
+from itertools import product
+with open('exptbl.dat','w') as fout2:
+	for idx, (lr, l2, q) in enumerate(product([0.5,0.1,0.01],[0.1,0.01,0.001],['linear','sqrt','none'])):
+		with open('exp_%d.py'%(idx),'w') as fout:
+			fout.write(script.format(quenching_mode=q,l2penalty=l2,lr=lr))
+		print >>fout2, "{idx} : lr={lr}, l2={l2}, quenching={q}".format(idx=idx,lr=lr,l2=l2,q=q)
+
+
 
